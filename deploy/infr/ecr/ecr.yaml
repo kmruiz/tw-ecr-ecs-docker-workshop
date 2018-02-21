@@ -11,6 +11,6 @@ Outputs:
       Name: DockerWorkshopRepositoryArn
   DockerWorkshopRepository:
     Description: "URL for the repository"
-    Value: !Join [ "", [ !Ref "AWS::AccountId", ".dkr.ecr.", !Ref "AWS::Region", ".amazonaws.com/", !Ref ECR ] ] # aws_account_id.dkr.ecr.region.amazonaws.com/my-web-app
+    Value: !Join [ "", [ !Ref "AWS::AccountId", ".dkr.ecr.", !Ref "AWS::Region", ".amazonaws.com/", !Ref ECR ] ]
     Export:
       Name: DockerWorkshopRepository

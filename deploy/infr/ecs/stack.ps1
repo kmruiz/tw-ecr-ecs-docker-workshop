@@ -1,20 +1,15 @@
-param([String] $action, [String] $version="0.0.1-SNAPSHOT")
+param([String] $action)
 
 $currentPath=$PSScriptRoot
-
-. $currentPath/../../lib/cf.ps1
-
-$service = "dockerworkshop"
-$ServiceName = (Get-Culture).textinfo.totitlecase($service.tolower()).replace("-", "")
-$ImageName = $service
-$DockerVersion = "$version"
-$DesiredCount = 2
-
-$P = $(
-"ParameterKey=ServiceName,ParameterValue=$ServiceName",
-"ParameterKey=DockerVersion,ParameterValue=$DockerVersion",
-"ParameterKey=DesiredCount,ParameterValue=$DesiredCount"
-)
+. $PSScriptRoot/../../lib/cf.ps1
 
 $stack = [Stack]::new("file://$currentPath/ecs.yaml", "docker-workshop-ecs")
+$subnets = [Stack]::DefaultSubnets() -join ","
+$vpc = [Stack]::DefaultVpc()
+
+$P = $(
+"ParameterKey=Subnets,ParameterValue='$subnets'"
+"ParameterKey=Vpc,ParameterValue=$vpc"
+)
+
 $stack.Invoke($action, $P)

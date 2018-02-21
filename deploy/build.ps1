@@ -1,12 +1,10 @@
 param([String] $version)
 
-$currentPath=$PSScriptRoot
-. $currentPath/lib/cf.ps1
+. $PSScriptRoot/lib/cf.ps1
 
-$repo = [Stack]::GetExport("DockerWorkshopRepository")
-$image = "${repo}:${version}"
+[ECR]::Login()
 
-docker build --build-arg SERVICE_VERSION=${version} -t $image .
+$image = [ECR]::DockerWorkshopRepository($version)
 
-Invoke-Expression -Command (aws ecr get-login --no-include-email --region eu-west-1)
+docker build --build-arg SERVICE_VERSION=$version -t $image .
 docker push $image

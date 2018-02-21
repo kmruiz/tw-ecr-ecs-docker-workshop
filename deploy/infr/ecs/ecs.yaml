@@ -1,42 +1,210 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Parameters:
-  ServiceName:
-    Type: String
-  DockerVersion:
-    Type: String
-  DesiredCount:
+  MaxCount:
     Type: Number
+    Default: 2
     MinValue: 1
     MaxValue: 6
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+  Vpc:
+    Type: AWS::EC2::VPC::Id
 
 Resources:
+  ##################################################################################################################
+  ### ECS Cluster Basic Infrastructure #############################################################################
+  ##################################################################################################################
+
   ECSCluster:
     Type: "AWS::ECS::Cluster"
     Properties:
       ClusterName: docker-workshop
 
-  ServiceTask:
-    Type: "AWS::ECS::TaskDefinition"
+  CloudwatchLogsGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      ContainerDefinitions:
-        - Image: !Join
-                 - ""
-                 - - !ImportValue DockerWorkshopRepository
-                   - ':'
-                   - !Ref DockerVersion
-          Name: !Join
-               - "_"
-               - !Split [ "-", !Ref ServiceName ]
-          Essential: true
-          Cpu: 1
-          Memory: 64
+      LogGroupName: !Join ['-', [ECSLogGroup, !Ref 'AWS::StackName']]
+      RetentionInDays: 1
 
-  Service:
-    Type: "AWS::ECS::Service"
+  ##################################################################################################################
+  ### ECS Backing AutoScaling Group ################################################################################
+  ##################################################################################################################
+  ECSALB:
+      Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+      Properties:
+        Name: ECSALB
+        Scheme: internet-facing
+        LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '30'
+        SecurityGroups: [!GetAtt [EcsSecurityGroup, GroupId]]
+        Subnets: !Ref Subnets
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: ECSServiceRole
     Properties:
-      Cluster: !Ref ECSCluster
-      DeploymentConfiguration:
-        MinimumHealthyPercent: 50
-      DesiredCount: !Ref DesiredCount
-      ServiceName: !Ref ServiceName
-      TaskDefinition: !Ref ServiceTask
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref 'ECSTG'
+      LoadBalancerArn: !Ref 'ECSALB'
+      Port: '80'
+      Protocol: HTTP
+  ECSALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: ALBListener
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref 'ECSTG'
+      Conditions:
+      - Field: path-pattern
+        Values: [/]
+      ListenerArn: !Ref 'ALBListener'
+      Priority: 1
+  ECSTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: ECSALB
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /hello-world/yo
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      VpcId: !Ref Vpc
+      Name: ECSTG
+      Port: 80
+      Protocol: HTTP
+  ECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        Fn::GetAZs:
+          Ref: "AWS::Region"
+      TargetGroupARNs: [ !Ref 'ECSTG' ]
+      LaunchConfigurationName: !Ref 'ContainerInstances'
+      MinSize: '1'
+      MaxSize: !Ref 'MaxCount'
+      DesiredCapacity: 2
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: 'true'
+  ContainerInstances:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: 'ami-880d64f1'
+      SecurityGroups: [!Ref 'EcsSecurityGroup']
+      InstanceType: 't2.micro'
+      IamInstanceProfile: !Ref 'EC2InstanceProfile'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+          yum install -y aws-cfn-bootstrap
+
+
+  ##################################################################################################################
+  ### ECS Backing AutoScaling Roles ################################################################################
+  ##################################################################################################################
+  ECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action: ['elasticloadbalancing:DeregisterInstancesFromLoadBalancer', 'elasticloadbalancing:DeregisterTargets',
+              'elasticloadbalancing:Describe*', 'elasticloadbalancing:RegisterInstancesWithLoadBalancer',
+              'elasticloadbalancing:RegisterTargets', 'ec2:Describe*', 'ec2:AuthorizeSecurityGroupIngress']
+            Resource: '*'
+  EC2Role:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ec2.amazonaws.com]
+            Action: ['sts:AssumeRole']
+        Path: /
+        Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action: ['ecs:CreateCluster', 'ecs:DeregisterContainerInstance', 'ecs:DiscoverPollEndpoint',
+                'ecs:Poll', 'ecs:RegisterContainerInstance', 'ecs:StartTelemetrySession',
+                'ecs:Submit*', 'logs:CreateLogStream', 'logs:PutLogEvents']
+              Resource: '*'
+        - PolicyName: ecr-access
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action: ['ecr:BatchCheckLayerAvailability', 'ecr:BatchGetImage',
+                'ecr:GetDownloadUrlForLayer', 'ecr:GetAuthorizationToken']
+              Resource: '*'
+
+  AutoscalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [application-autoscaling.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: service-autoscaling
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action: ['application-autoscaling:*', 'cloudwatch:DescribeAlarms', 'cloudwatch:PutMetricAlarm',
+              'ecs:DescribeServices', 'ecs:UpdateService']
+            Resource: '*'
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref 'EC2Role']
+
+  EcsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS Security Group
+  EcsSecurityGroupHTTPinbound:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt [EcsSecurityGroup, GroupId]
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupALBports:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt [EcsSecurityGroup, GroupId]
+      IpProtocol: tcp
+      FromPort: '80'
+      ToPort: '80'
+      SourceSecurityGroupId: !GetAtt [EcsSecurityGroup, GroupId]
+
+Outputs:
+  DockerWorkshopCloudwatchLogsGroup:
+    Description: ""
+    Value: !Ref 'CloudwatchLogsGroup'
+    Export:
+      Name: DockerWorkshopCloudwatchLogsGroup
+  ECSCluster:
+    Value: !Ref 'ECSCluster'
+    Export:
+      Name: DockerWorkshopECSCluster
+  ECSALB:
+    Description: ALB DNS
+    Value: !Join ['', [!GetAtt [ECSALB, DNSName]]]

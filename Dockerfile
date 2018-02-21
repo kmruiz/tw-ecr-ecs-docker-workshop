@@ -7,5 +7,5 @@ WORKDIR /service
 ADD . /service/
 
 RUN echo ${SERVICE_VERSION} > version
-RUN ./gradlew build
+RUN ./gradlew build -x check
 CMD java ${JVM_PROPERTIES} -jar build/libs/service-`cat version`.jar
