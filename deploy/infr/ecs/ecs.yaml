@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  ServiceName:
+    Type: String
+  DockerVersion:
+    Type: String
+  DesiredCount:
+    Type: Number
+    MinValue: 1
+    MaxValue: 6
+
+Resources:
+  ECSCluster:
+    Type: "AWS::ECS::Cluster"
+    Properties:
+      ClusterName: docker-workshop
+
+  ServiceTask:
+    Type: "AWS::ECS::TaskDefinition"
+    Properties:
+      ContainerDefinitions:
+        - Image: !Join
+                 - ""
+                 - - !ImportValue DockerWorkshopRepository
+                   - ':'
+                   - !Ref DockerVersion
+          Name: !Join
+               - "_"
+               - !Split [ "-", !Ref ServiceName ]
+          Essential: true
+          Cpu: 1
+          Memory: 64
+
+  Service:
+    Type: "AWS::ECS::Service"
+    Properties:
+      Cluster: !Ref ECSCluster
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 50
+      DesiredCount: !Ref DesiredCount
+      ServiceName: !Ref ServiceName
+      TaskDefinition: !Ref ServiceTask
